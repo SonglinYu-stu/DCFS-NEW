@@ -565,7 +565,7 @@ class FastRCNNOutputLayers(nn.Module):
 class ClipOutputLayersStep7(nn.Module):
     def __init__(
         self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4,
-        clip_feat='/home/ysl/DCFS/dcfs/modeling/roi_heads/coco_clip.json'
+        clip_feat='./dcfs/modeling/roi_heads/coco_clip.json'
     ):
         super().__init__()
         if not isinstance(input_size, int):

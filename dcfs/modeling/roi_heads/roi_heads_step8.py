@@ -33,7 +33,7 @@ class Res5ROIHeadsStep8(Res5ROIHeads):
 
     def __init__(self,
                  *args,
-                 clip_feat='/home/ysl/DCFS/dcfs/modeling/roi_heads/coco_clip.json',
+                 clip_feat='./dcfs/modeling/roi_heads/coco_clip.json',
                  scale=20,
                 **kwargs):
         super().__init__(*args, **kwargs)
