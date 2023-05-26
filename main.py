@@ -40,6 +40,8 @@ class Trainer(DefaultTrainer):
 
 def setup(args):
     cfg = get_cfg()
+    # 允许添加新键
+    cfg.set_new_allowed(True)
     cfg.merge_from_file(args.config_file)
     if args.opts:
         cfg.merge_from_list(args.opts)

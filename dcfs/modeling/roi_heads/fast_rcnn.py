@@ -11,6 +11,7 @@ from detectron2.layers import batched_nms, cat
 from detectron2.structures import Boxes, Instances
 from detectron2.utils.events import get_event_storage
 import copy
+from .classes import COCO_BASE_CLASSES, COCO_ALL_CLASSES, COCO_NOVEL_CLASSES
 
 ROI_HEADS_OUTPUT_REGISTRY = Registry("ROI_HEADS_OUTPUT")
 ROI_HEADS_OUTPUT_REGISTRY.__doc__ = """
@@ -452,6 +453,63 @@ class FastRCNNOutputs(object):
         )
 
 
+class FastRCNNOutputsStep8(FastRCNNOutputs):
+
+    def basetrainlog(self, pred_class_logits, class_labels):
+        num_instances = class_labels.numel()
+        pred_classes = pred_class_logits.argmax(dim=1)
+        bg_class_ind = pred_class_logits.shape[1] - 1
+
+        fg_inds = (class_labels >= 0) & (class_labels < bg_class_ind)
+        num_fg = fg_inds.nonzero().numel()
+        fg_gt_classes = class_labels[fg_inds]
+        fg_pred_classes = pred_classes[fg_inds]
+
+        num_false_negative = (
+            (fg_pred_classes == bg_class_ind).nonzero().numel()
+        )
+        num_accurate = (pred_classes == class_labels).nonzero().numel()
+        fg_num_accurate = (fg_pred_classes == fg_gt_classes).nonzero().numel()
+
+        storage = get_event_storage()
+        storage.put_scalar(
+            "fast_rcnn/cls_accuracy", num_accurate / num_instances
+        )
+        if num_fg > 0:
+            storage.put_scalar(
+                "fast_rcnn/fg_cls_accuracy", fg_num_accurate / num_fg
+            )
+            storage.put_scalar(
+                "fast_rcnn/false_negative", num_false_negative / num_fg
+            )
+    
+    def potential_loss(self, scores, pot_flags, pot_cls_ids):
+        scores = scores[pot_flags] # [k, 80]
+        pot_cls_ids = pot_cls_ids[pot_flags] # [k]
+        if scores.size(0):
+            return F.cross_entropy(
+                scores, pot_cls_ids, reduction="mean"
+            )
+        else:
+            return torch.tensor(0.0).to(scores)
+
+
+    def baseloss(self, gt_classes, scores, pot_flags, pot_cls_ids):
+        losses = {}
+        pot_inds = gt_classes >= self.pred_class_logits.size(-1)
+        pred_class_logits = self.pred_class_logits[~pot_inds]
+        class_labels = gt_classes[~pot_inds]
+
+        self.basetrainlog(pred_class_logits, class_labels)
+        losses['loss_cls'] = F.cross_entropy(
+            pred_class_logits, class_labels, reduction="mean"
+        )
+        losses['loss_potential'] = self.potential_loss(scores, pot_flags, pot_cls_ids)
+        losses['loss_box_reg'] = self.smooth_l1_loss()
+
+        return losses
+        
+
 @ROI_HEADS_OUTPUT_REGISTRY.register()
 class FastRCNNOutputLayers(nn.Module):
     """
@@ -503,3 +561,156 @@ class FastRCNNOutputLayers(nn.Module):
 
         return scores, proposal_deltas
 
+@ROI_HEADS_OUTPUT_REGISTRY.register()
+class ClipOutputLayersStep7(nn.Module):
+    def __init__(
+        self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4,
+        clip_feat='/home/ysl/DCFS/dcfs/modeling/roi_heads/coco_clip.json'
+    ):
+        super().__init__()
+        if not isinstance(input_size, int):
+            input_size = np.prod(input_size)
+
+        num_bbox_reg_classes = 1 if cls_agnostic_bbox_reg else num_classes
+        self.cls_embed = nn.Linear(input_size, 512)
+        self.bbox_pred = nn.Linear(input_size, num_bbox_reg_classes * box_dim)
+        self.bg_embed = nn.Parameter(torch.randn(1, 512))
+
+        nn.init.normal_(self.bbox_pred.weight, std=0.001)
+        nn.init.constant_(self.bbox_pred.bias, 0)
+        nn.init.normal_(self.cls_embed.weight, std=0.01)
+        nn.init.constant_(self.cls_embed.bias, 0)
+
+        self._do_cls_dropout = cfg.MODEL.ROI_HEADS.CLS_DROPOUT
+        self._dropout_ratio = cfg.MODEL.ROI_HEADS.DROPOUT_RATIO
+
+        self.base_classes = COCO_BASE_CLASSES
+        self.novel_classes = COCO_NOVEL_CLASSES
+        self.all_classes = COCO_ALL_CLASSES
+        self.num_classes = num_classes
+        self.clip_feat = clip_feat
+
+    def forward(self, x):
+
+        if x.dim() > 2:
+            x = torch.flatten(x, start_dim=1)
+        proposal_deltas = self.bbox_pred(x)
+
+        import json
+        with open(self.clip_feat, 'r') as f:
+            clip_feat = json.load(f)
+        fg_feat = []
+        if self.num_classes == len(self.base_classes):
+            for cls in self.base_classes:
+                fg_feat.append(torch.tensor(clip_feat[cls]))
+        elif self.num_classes == len(self.all_classes):
+            for cls in self.all_classes:
+                fg_feat.append(torch.tensor(clip_feat[cls]))
+        fg_feat = torch.stack(fg_feat, dim=0)
+        fg_feat = fg_feat.to(x)
+        cls_prototypes = torch.cat([fg_feat, self.bg_embed], dim=0)
+
+        x = self.cls_embed(x)
+        if self._do_cls_dropout:
+            x = F.dropout(x, self._dropout_ratio, training=self.training)
+        scores = x @ (cls_prototypes.permute(1, 0))
+        return scores, proposal_deltas
+    
+    def potential_loss(self, x, threshold, weight):
+        if x.dim() > 2:
+            x = torch.flatten(x, start_dim=1)
+        import json
+        with open(self.clip_feat, 'r') as f:
+            clip_feat = json.load(f)
+        fg_feat = []
+        for cls in self.base_classes:
+            fg_feat.append(torch.tensor(clip_feat[cls]))
+        for cls in self.novel_classes:
+            fg_feat.append(torch.tensor(clip_feat[cls]))
+        fg_feat = torch.stack(fg_feat, dim=0)
+        cls_prototypes = fg_feat.to(x)
+        x = self.cls_embed(x)
+        scores = x @ (cls_prototypes.permute(1, 0))
+        scores = torch.softmax(scores, dim=1)
+        max_vals, idxs = scores.max(dim=1)
+        # import pdb
+        # pdb.set_trace()
+        flag = (idxs >= self.num_classes) & (max_vals > threshold) 
+
+        if len(scores[flag]):
+            loss = -torch.log(max_vals[flag] / scores[flag].sum(dim=1))
+            loss = loss.mean() * weight
+        else:
+            loss = torch.zeros(1).to(scores)
+        return {'loss_potential': loss}
+    
+
+@ROI_HEADS_OUTPUT_REGISTRY.register()
+class ClipOutputLayersStep8(nn.Module):
+    def __init__(
+        self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4,
+        clip_feat='/home/ysl/DCFS/dcfs/modeling/roi_heads/coco_clip.json',
+        scale=20
+    ):
+        super().__init__()
+        if not isinstance(input_size, int):
+            input_size = np.prod(input_size)
+
+        num_bbox_reg_classes = 1 if cls_agnostic_bbox_reg else num_classes
+        self.cls_embed = nn.Linear(input_size, 512)
+        self.bbox_pred = nn.Linear(input_size, num_bbox_reg_classes * box_dim)
+        self.bg_embed = nn.Parameter(torch.randn(1, 512))
+
+        nn.init.normal_(self.bbox_pred.weight, std=0.001)
+        nn.init.constant_(self.bbox_pred.bias, 0)
+        nn.init.normal_(self.cls_embed.weight, std=0.01)
+        nn.init.constant_(self.cls_embed.bias, 0)
+
+        self._do_cls_dropout = cfg.MODEL.ROI_HEADS.CLS_DROPOUT
+        self._dropout_ratio = cfg.MODEL.ROI_HEADS.DROPOUT_RATIO
+
+        self.base_classes = COCO_BASE_CLASSES
+        self.novel_classes = COCO_NOVEL_CLASSES
+        self.all_classes = COCO_ALL_CLASSES
+        self.num_classes = num_classes
+        self.clip_feat = clip_feat
+        self.scale = nn.Parameter(torch.ones(1) * scale)
+
+    def cosine_similarity(self, tensor1, tensor2):
+        '''
+        tensor1: [n, c]
+        tensor2: [m, c]
+        '''
+        # 归一化两个张量
+        tensor1_normalized = F.normalize(tensor1, p=2, dim=1)
+        tensor2_normalized = F.normalize(tensor2, p=2, dim=1)
+
+        # 计算余弦相似度
+        similarity = torch.mm(tensor1_normalized, tensor2_normalized.t())
+        return similarity
+
+    def forward(self, x):
+
+        if x.dim() > 2:
+            x = torch.flatten(x, start_dim=1)
+        proposal_deltas = self.bbox_pred(x)
+
+        import json
+        with open(self.clip_feat, 'r') as f:
+            clip_feat = json.load(f)
+        fg_feat = []
+        if self.num_classes == len(self.base_classes):
+            for cls in self.base_classes:
+                fg_feat.append(torch.tensor(clip_feat[cls]))
+        elif self.num_classes == len(self.all_classes):
+            for cls in self.all_classes:
+                fg_feat.append(torch.tensor(clip_feat[cls]))
+        fg_feat = torch.stack(fg_feat, dim=0)
+        fg_feat = fg_feat.to(x)
+        cls_prototypes = torch.cat([fg_feat, self.bg_embed], dim=0)
+
+        x = self.cls_embed(x)
+        if self._do_cls_dropout:
+            x = F.dropout(x, self._dropout_ratio, training=self.training)
+        scores = self.scale * self.cosine_similarity(x, cls_prototypes)
+        return scores, proposal_deltas, x
