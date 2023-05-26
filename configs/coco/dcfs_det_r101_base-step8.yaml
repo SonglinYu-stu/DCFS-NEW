@@ -20,7 +20,7 @@ MODEL:
     NAME: Res5ROIHeadsStep8
     OUTPUT_LAYER: ClipOutputLayersStep8
     BASETRAIN: True
-    POT_THRESH: 0.25
+    POT_THRESH: 0.11
     NUM_CLASSES: 60
     ENABLE_DECOUPLE: True
     BACKWARD_SCALE: 0.75
