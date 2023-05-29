@@ -43,7 +43,7 @@ class Res5ROIHeadsStep8(Res5ROIHeads):
         self.novel_classes = COCO_NOVEL_CLASSES
         self.all_classes = COCO_ALL_CLASSES
         self.pot_thresh = cfg.MODEL.ROI_HEADS.POT_THRESH # potential thresh hold
-        self.novel_thresh = [0.0] * len(COCO_NOVEL_CLASSES) # each novel cls thresh hold
+        # self.novel_thresh = [0.0] * len(COCO_NOVEL_CLASSES) # each novel cls thresh hold
         with open(clip_feat, 'r') as f:
             self.clip_feat = json.load(f)
         basecls_feat = []
@@ -90,36 +90,30 @@ class Res5ROIHeadsStep8(Res5ROIHeads):
         fg_gt_cls = gt_classes[fg_inds]
         fg_clsfeat = proposal_embeddings[fg_inds]
         
+        # import pdb
+        # pdb.set_trace()
         fg_cossim = self.cosine_similarity(fg_clsfeat, baseclip_feat) # [k, 60]
         fg_cossim = fg_cossim[range(fg_cossim.size(0)), fg_gt_cls] # [k]
-        fg_cossim_mean = fg_cossim.mean() # change to mean
-        self.pot_thresh = max(self.pot_thresh, fg_cossim_mean.item())
-        self.log('fg_cossim_min', fg_cossim.min())
-        self.log('fg_cossim_max', fg_cossim.max())
-        self.log('fg_cossim_mean', fg_cossim.mean())
-
-        # update self.novel_thresh
-        self.novel_thresh = [x if x >= self.pot_thresh else self.pot_thresh for x in self.novel_thresh]
+        fg_cossim_mean = torch.mean(fg_cossim)
+        fg_cossim_std = torch.std(fg_cossim)
+        # 判nan
+        fg_cossim_mean[torch.isnan(fg_cossim_mean)] = .0
+        fg_cossim_std[torch.isnan(fg_cossim_mean)] = .0
+        self.log('fg_cossim_mean', fg_cossim_mean)
+        self.log('fg_cossim_std', fg_cossim_std)
 
         bg_clsfeat = proposal_embeddings[bg_inds]
         bg_cossim = self.cosine_similarity(bg_clsfeat, novelclip_feat) # [k, 20]
         bg_cossim_max, pot_cls_ids = bg_cossim.max(dim=1)
         self.log('bg_cossim_max', bg_cossim_max.max())
-        novel_thresh = torch.tensor(self.novel_thresh) # [20]
-        thresh = novel_thresh[pot_cls_ids].to(bg_cossim)
-        pot_flags = bg_cossim_max > thresh
+        pot_thresh = fg_cossim_mean - fg_cossim_std
+        pot_thresh = torch.max(pot_thresh, torch.tensor(self.pot_thresh).to(pot_thresh))
+        pot_flags = bg_cossim_max > pot_thresh
+
         neg_classes = gt_classes[bg_inds]
         neg_classes[pot_flags] = pot_cls_ids[pot_flags] + num_base + 1
         gt_classes[bg_inds] = neg_classes
 
-        # update self.novel_thresh
-        updata_thresh = bg_cossim_max[pot_flags]
-        updata_cat = pot_cls_ids[pot_flags]
-        if updata_thresh.size(0) == 0:
-            pass
-        else:
-            for cat_id, new_thresh in zip(updata_cat.tolist(), updata_thresh.tolist()):
-                self.novel_thresh[cat_id] = max(self.novel_thresh[cat_id], new_thresh)
         return gt_classes, pot_cls_ids, pot_flags
 
     def forward(self, images, features, proposals, targets=None, fs_class=None):
@@ -152,7 +146,13 @@ class Res5ROIHeadsStep8(Res5ROIHeads):
                                                                     novelclip_feat)
             bg_inds = (origin_gt_classes == len(self.base_classes))
             bg_clsfeat = proposal_embeddings[bg_inds]
-            scores = self.scale * self.cosine_similarity(bg_clsfeat, allclip_feat)
+            pot_clsfeat = bg_clsfeat[pot_flags]
+
+            pot_base_scores = self.scale * self.cosine_similarity(pot_clsfeat, baseclip_feat) # [k, 60]
+            pot_novel_scores = self.scale * self.cosine_similarity(pot_clsfeat, novelclip_feat) # [k, 20]
+
+            pot_base_scores_max, _ = pot_base_scores.max(dim=1) # [k]
+            pot_novel_scores_max, _ = pot_novel_scores.max(dim=1) # [k]
 
         outputs = FastRCNNOutputsStep8(
             self.box2box_transform,
@@ -167,7 +167,7 @@ class Res5ROIHeadsStep8(Res5ROIHeads):
         if self.training:
             del features
             if self.base_train:
-                losses = outputs.baseloss(gt_classes, scores, pot_flags, pot_cls_ids)
+                losses = outputs.baseloss(gt_classes, pot_base_scores_max, pot_novel_scores_max)
             else:
                 losses = outputs.losses()
 

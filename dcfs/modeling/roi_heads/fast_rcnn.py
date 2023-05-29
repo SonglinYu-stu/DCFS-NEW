@@ -483,18 +483,18 @@ class FastRCNNOutputsStep8(FastRCNNOutputs):
                 "fast_rcnn/false_negative", num_false_negative / num_fg
             )
     
-    def potential_loss(self, scores, pot_flags, pot_cls_ids):
-        scores = scores[pot_flags] # [k, 80]
-        pot_cls_ids = pot_cls_ids[pot_flags] # [k]
-        if scores.size(0):
+    def potential_loss(self, base_scores, novel_scores):
+        scores = torch.stack([novel_scores, base_scores], dim=1)
+        labels = torch.zeros(scores.size(0)).to(scores)
+        if base_scores.size(0):
             return F.cross_entropy(
-                scores, pot_cls_ids, reduction="mean"
+                scores, labels, reduction="mean"
             )
         else:
             return torch.tensor(0.0).to(scores)
 
 
-    def baseloss(self, gt_classes, scores, pot_flags, pot_cls_ids):
+    def baseloss(self, gt_classes, base_scores, novel_scores):
         losses = {}
         pot_inds = gt_classes >= self.pred_class_logits.size(-1)
         pred_class_logits = self.pred_class_logits[~pot_inds]
@@ -504,7 +504,7 @@ class FastRCNNOutputsStep8(FastRCNNOutputs):
         losses['loss_cls'] = F.cross_entropy(
             pred_class_logits, class_labels, reduction="mean"
         )
-        losses['loss_potential'] = self.potential_loss(scores, pot_flags, pot_cls_ids)
+        losses['loss_potential'] = self.potential_loss(base_scores, novel_scores)
         losses['loss_box_reg'] = self.smooth_l1_loss()
 
         return losses
