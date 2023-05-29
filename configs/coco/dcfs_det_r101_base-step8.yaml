@@ -33,7 +33,7 @@ DATASETS:
   TRAIN: ('coco14_trainval_base',)
   TEST: ('coco14_test_base',)
 SOLVER:
-  IMS_PER_BATCH: 4
+  IMS_PER_BATCH: 16
   STEPS: (85000, 100000)
   MAX_ITER: 110000
   CHECKPOINT_PERIOD: 20000
