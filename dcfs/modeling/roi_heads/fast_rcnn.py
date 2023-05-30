@@ -485,7 +485,7 @@ class FastRCNNOutputsStep8(FastRCNNOutputs):
     
     def potential_loss(self, base_scores, novel_scores):
         scores = torch.stack([novel_scores, base_scores], dim=1)
-        labels = torch.zeros(scores.size(0)).to(scores)
+        labels = torch.zeros(scores.size(0)).to(scores).long()
         if base_scores.size(0):
             return F.cross_entropy(
                 scores, labels, reduction="mean"
