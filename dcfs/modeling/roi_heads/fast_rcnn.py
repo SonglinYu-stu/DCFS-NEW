@@ -649,7 +649,7 @@ class ClipOutputLayersStep7(nn.Module):
 class ClipOutputLayersStep8(nn.Module):
     def __init__(
         self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4,
-        clip_feat='.dcfs/modeling/roi_heads/coco_clip.json',
+        clip_feat='./dcfs/modeling/roi_heads/coco_clip.json',
         scale=20
     ):
         super().__init__()
