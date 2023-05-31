@@ -105,7 +105,10 @@ class Res5ROIHeadsStep8(Res5ROIHeads):
         bg_clsfeat = proposal_embeddings[bg_inds]
         bg_cossim = self.cosine_similarity(bg_clsfeat, novelclip_feat) # [k, 20]
         bg_cossim_max, pot_cls_ids = bg_cossim.max(dim=1)
-        self.log('bg_cossim_max', bg_cossim_max.max())
+        if bg_cossim_max.size(0):    
+            self.log('bg_cossim_max', bg_cossim_max.max())
+        else:
+            self.log('bg_cossim_max', torch.zeros(1).to(bg_cossim_max))
         pot_thresh = fg_cossim_mean - fg_cossim_std
         pot_thresh = torch.max(pot_thresh, torch.tensor(self.pot_thresh).to(pot_thresh))
         pot_flags = bg_cossim_max > pot_thresh
