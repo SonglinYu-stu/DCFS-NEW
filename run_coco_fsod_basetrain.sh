@@ -18,7 +18,7 @@ fi
 
 
 # ------------------------------- Base Pre-train ---------------------------------- #
-python3 main.py --num-gpus ${NUNMGPU} --config-file configs/coco/dcfs_det_r101_base-step8.yaml     \
+python3 main.py --num-gpus ${NUNMGPU} --config-file configs/coco/dcfs_det_r101_base-step9.yaml     \
     --opts MODEL.WEIGHTS ${IMAGENET_PRETRAIN}                                         \
            OUTPUT_DIR ${SAVEDIR}/dcfs_det_${NET}_base
 

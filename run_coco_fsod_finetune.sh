@@ -23,7 +23,7 @@ fi
 #            OUTPUT_DIR ${SAVEDIR}/dcfs_det_${NET}_base
 
 # ----------------------------- Model Preparation --------------------------------- #
-python3 tools/model_surgery_withoutcls.py --dataset coco --method randinit                        \
+python3 tools/model_surgery.py --dataset coco --method randinit                        \
     --src-path ${SAVEDIR}/dcfs_det_${NET}_base/model_final.pth                         \
     --save-dir ${SAVEDIR}/dcfs_det_${NET}_base                                         \
     --param-name roi_heads.box_predictor.bbox_pred
@@ -31,14 +31,14 @@ BASE_WEIGHT=${SAVEDIR}/dcfs_det_${NET}_base/model_reset_surgery.pth
 
 # ------------------------------ Base+Novel Fine-tuning ------------------------------- #
 # --> 2. TFA-like, i.e. run seed0~9 (10 times) for gFSOD (80 classes)
-classloss="DC" # "CE"
+# classloss="DC" # "CE"
 for seed in 0 
 do
     for shot in 10
     do
         TRAIN_ALL_NAME=coco14_trainval_all_${shot}shot_seed${seed}
         TEST_ALL_NAME=coco14_test_all
-        CONFIG_PATH=configs/coco/dcfs_gfsod_${NET}_novel_${shot}shot_step8_seedx.yaml
+        CONFIG_PATH=configs/coco/dcfs_gfsod_${NET}_novel_${shot}shot_step9_seedx.yaml
         
         OUTPUT_DIR=${SAVEDIR}/dcfs_gfsod_${NET}_novel/tfa-like-${classloss}/${shot}shot_seed${seed}
         python3 main.py --num-gpus ${NUNMGPU} --config-file ${CONFIG_PATH}                      \
